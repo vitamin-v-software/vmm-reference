@@ -4,7 +4,7 @@
 #![deny(missing_docs)]
 
 use std::convert::TryFrom;
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use std::convert::TryInto;
 use std::fs::File;
 use std::io::{self, stdin, stdout};
@@ -39,16 +39,16 @@ use vm_device::bus::{MmioAddress, MmioRange};
 #[cfg(target_arch = "x86_64")]
 use vm_device::bus::{PioAddress, PioRange};
 use vm_device::device_manager::IoManager;
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use vm_device::device_manager::MmioManager;
 #[cfg(target_arch = "x86_64")]
 use vm_device::device_manager::PioManager;
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use vm_memory::GuestMemoryRegion;
 use vm_memory::{GuestAddress, GuestMemory, GuestMemoryMmap};
 #[cfg(target_arch = "x86_64")]
 use vm_superio::I8042Device;
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use vm_superio::Rtc;
 use vm_superio::Serial;
 use vmm_sys_util::{epoll::EventSet, eventfd::EventFd, terminal::Terminal};
@@ -60,16 +60,22 @@ use devices::virtio::block::{self, BlockArgs};
 use devices::virtio::net::{self, NetArgs};
 use devices::virtio::{Env, MmioConfig};
 
+use devices::intc::APlicTrigger;
 #[cfg(target_arch = "x86_64")]
 use devices::legacy::I8042Wrapper;
 use devices::legacy::{EventFdTrigger, SerialWrapper};
 use vm_vcpu::vm::{self, ExitHandler, KvmVm, VmConfig};
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+use arch::fdt::FdtBuilder;
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use devices::legacy::RtcWrapper;
 
 #[cfg(target_arch = "aarch64")]
-use arch::{FdtBuilder, AARCH64_FDT_MAX_SIZE, AARCH64_MMIO_BASE, AARCH64_PHYS_MEM_START};
+use arch::aarch64_consts::{AARCH64_FDT_MAX_SIZE, AARCH64_MMIO_BASE, AARCH64_PHYS_MEM_START};
+
+#[cfg(target_arch = "riscv64")]
+use arch::riscv64_consts::{RISCV64_FDT_MAX_SIZE, RISCV64_MMIO_BASE, RISCV64_PHYS_MEM_START};
 
 use vm_allocator::{AddressAllocator, AllocPolicy, RangeInclusive};
 
@@ -102,15 +108,21 @@ pub const DEFAULT_HIGH_RAM_START: u64 = 0x0010_0000;
 /// Default address for loading the kernel.
 #[cfg(target_arch = "x86_64")]
 pub const DEFAULT_KERNEL_LOAD_ADDR: u64 = DEFAULT_HIGH_RAM_START;
-#[cfg(target_arch = "aarch64")]
 /// Default address for loading the kernel.
+#[cfg(target_arch = "aarch64")]
 pub const DEFAULT_KERNEL_LOAD_ADDR: u64 = AARCH64_PHYS_MEM_START;
+/// Default address for loading the kernel.
+#[cfg(target_arch = "riscv64")]
+pub const DEFAULT_KERNEL_LOAD_ADDR: u64 = RISCV64_PHYS_MEM_START;
 
 /// Default kernel command line.
 #[cfg(target_arch = "x86_64")]
 pub const DEFAULT_KERNEL_CMDLINE: &str = "panic=1 pci=off";
-#[cfg(target_arch = "aarch64")]
 /// Default kernel command line.
+#[cfg(target_arch = "aarch64")]
+pub const DEFAULT_KERNEL_CMDLINE: &str = "reboot=t panic=1 pci=off";
+/// Default kernel command line.
+#[cfg(target_arch = "riscv64")]
 pub const DEFAULT_KERNEL_CMDLINE: &str = "reboot=t panic=1 pci=off";
 /// Default address allocator alignment. It needs to be a power of 2.
 pub const DEFAULT_ADDRESSS_ALIGNEMNT: u64 = 4;
@@ -172,9 +184,9 @@ pub enum Error {
     #[cfg(target_arch = "x86_64")]
     /// Cannot retrieve the supported MSRs.
     GetSupportedMsrs(vm_vcpu_ref::x86_64::msrs::Error),
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
     /// Cannot setup the FDT for booting.
-    SetupFdt(arch::Error),
+    SetupFdt(arch::fdt::Error),
     /// IrqAllocator error
     IrqAllocator(irq_allocator::Error),
 }
@@ -223,10 +235,11 @@ pub struct Vmm {
     // TODO: fetch the vcpu number from the `vm` object.
     // TODO-continued: this is needed to make the arm POC work as we need to create the FDT
     // TODO-continued: after the other resources are created.
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
     num_vcpus: u64,
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
     fdt_builder: FdtBuilder,
+    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
     config: VMMConfig,
 }
 
@@ -286,6 +299,7 @@ impl TryFrom<VMMConfig> for Vmm {
     type Error = Error;
 
     fn try_from(config: VMMConfig) -> Result<Self> {
+        #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
         let config_copy = config.clone();
         let kvm = Kvm::new().map_err(Error::KvmIoctl)?;
 
@@ -314,10 +328,10 @@ impl TryFrom<VMMConfig> for Vmm {
         let mut event_manager = EventManager::<Arc<Mutex<dyn MutEventSubscriber + Send>>>::new()
             .map_err(Error::EventManager)?;
         event_manager.add_subscriber(wrapped_exit_handler.0.clone());
-        #[cfg(target_arch = "aarch64")]
-        let fdt_builder = FdtBuilder::new();
+        #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+        let mut fdt_builder = FdtBuilder::new();
 
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
         if let Some(prebuilt_dtb) = &config.dtb {
             fdt_builder
                 .with_prebuilt_fdt(prebuilt_dtb.path.clone())
@@ -337,16 +351,17 @@ impl TryFrom<VMMConfig> for Vmm {
             exit_handler: wrapped_exit_handler,
             block_devices: Vec::new(),
             net_devices: Vec::new(),
-            #[cfg(target_arch = "aarch64")]
+            #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
             num_vcpus: config.vcpu_config.num as u64,
-            #[cfg(target_arch = "aarch64")]
+            #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
             fdt_builder,
+            #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
             config: config_copy,
         };
         vmm.add_serial_console()?;
         #[cfg(target_arch = "x86_64")]
         vmm.add_i8042_device()?;
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
         vmm.add_rtc_device()?;
 
         // Adding the virtio devices. We'll come up with a cleaner abstraction for `Env`.
@@ -368,9 +383,13 @@ impl Vmm {
         let load_result = self.load_kernel()?;
         #[cfg(target_arch = "x86_64")]
         let kernel_load_addr = self.compute_kernel_load_addr(&load_result)?;
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+        /*
+           The RISC-V kernel expects to be placed at a PMD boundary (2MB aligned for rv64
+           and 4MB aligned for rv32).
+        */
         let kernel_load_addr = load_result.kernel_load;
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
         self.setup_fdt()?;
 
         if stdin().lock().set_raw_mode().is_err() {
@@ -417,7 +436,9 @@ impl Vmm {
         }
 
         #[cfg(target_arch = "aarch64")]
-        vec![(GuestAddress(AARCH64_PHYS_MEM_START), mem_size)]
+        return vec![(GuestAddress(AARCH64_PHYS_MEM_START), mem_size)];
+        #[cfg(target_arch = "riscv64")]
+        return vec![(GuestAddress(RISCV64_PHYS_MEM_START), mem_size)];
     }
 
     fn create_address_allocator(memory_config: &MemoryConfig) -> Result<AddressAllocator> {
@@ -426,6 +447,8 @@ impl Vmm {
         let start_addr = MMIO_GAP_START;
         #[cfg(target_arch = "aarch64")]
         let start_addr = AARCH64_MMIO_BASE;
+        #[cfg(target_arch = "riscv64")]
+        let start_addr = RISCV64_MMIO_BASE;
         let address_allocator = AddressAllocator::new(start_addr, mem_size)?;
         Ok(address_allocator)
     }
@@ -510,7 +533,7 @@ impl Vmm {
         Ok(kernel_load)
     }
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
     fn load_kernel(&mut self) -> Result<KernelLoaderResult> {
         let mut kernel_image = File::open(&self.kernel_cfg.path).map_err(Error::IO)?;
         linux_loader::loader::pe::PE::load(
@@ -526,8 +549,19 @@ impl Vmm {
     fn add_serial_console(&mut self) -> Result<()> {
         // Create the serial console.
         let interrupt_evt = EventFdTrigger::new(libc::EFD_NONBLOCK).map_err(Error::IO)?;
+        #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
         let serial = Arc::new(Mutex::new(SerialWrapper(Serial::new(
             interrupt_evt.try_clone().map_err(Error::IO)?,
+            stdout(),
+        ))));
+        #[cfg(target_arch = "riscv64")]
+        let serial = Arc::new(Mutex::new(SerialWrapper(Serial::new(
+            APlicTrigger {
+                gsi: SERIAL_IRQ,
+                vm: self.vm.vm_fd(),
+            }
+            .try_clone()
+            .map_err(Error::IO)?,
             stdout(),
         ))));
 
@@ -545,6 +579,12 @@ impl Vmm {
             .insert_str(format!("earlycon=uart,mmio,0x{:08x}", AARCH64_MMIO_BASE))
             .map_err(Error::Cmdline)?;
 
+        #[cfg(target_arch = "riscv64")]
+        self.kernel_cfg
+            .cmdline
+            .insert_str(format!("earlycon=uart,mmio,0x{:08x}", RISCV64_MMIO_BASE))
+            .map_err(Error::Cmdline)?;
+
         // Put it on the bus.
         // Safe to use unwrap() because the device manager is instantiated in new(), there's no
         // default implementation, and the field is private inside the VMM struct.
@@ -558,13 +598,20 @@ impl Vmm {
                 .unwrap();
         }
 
+        #[cfg(target_arch = "riscv64")]
+        let range = self.address_allocator.allocate(
+            0x1000,
+            DEFAULT_ADDRESSS_ALIGNEMNT,
+            AllocPolicy::ExactMatch(RISCV64_MMIO_BASE),
+        )?;
         #[cfg(target_arch = "aarch64")]
+        let range = self.address_allocator.allocate(
+            0x1000,
+            DEFAULT_ADDRESSS_ALIGNEMNT,
+            AllocPolicy::ExactMatch(AARCH64_MMIO_BASE),
+        )?;
+        #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
         {
-            let range = self.address_allocator.allocate(
-                0x1000,
-                DEFAULT_ADDRESSS_ALIGNEMNT,
-                AllocPolicy::ExactMatch(AARCH64_MMIO_BASE),
-            )?;
             self.fdt_builder
                 .with_serial_console(range.start(), range.len());
             let range = mmio_from_range(&range);
@@ -599,7 +646,7 @@ impl Vmm {
         Ok(())
     }
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
     fn add_rtc_device(&mut self) -> Result<()> {
         let rtc = Arc::new(Mutex::new(RtcWrapper(Rtc::new())));
         let range = self.address_allocator.allocate(
@@ -652,9 +699,19 @@ impl Vmm {
             advertise_flush: true,
         };
 
+        let aplic_trigger = if cfg!(target_arch = "riscv64") {
+            Some(APlicTrigger {
+                gsi: irq,
+                vm: self.vm.vm_fd(),
+            })
+        } else {
+            None
+        };
+        let block = Block::new(self.guest_memory.clone(), &mut env, &args, aplic_trigger)
+            .map_err(Error::Block)?;
+
         // We can also hold this somewhere if we need to keep the handle for later.
-        let block = Block::new(self.guest_memory.clone(), &mut env, &args).map_err(Error::Block)?;
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
         self.fdt_builder
             .add_virtio_device(range.start(), range.len(), irq);
         self.block_devices.push(block);
@@ -690,12 +747,22 @@ impl Vmm {
             tap_name: cfg.tap_name.clone(),
         };
 
+        let aplic_trigger = if cfg!(target_arch = "riscv64") {
+            Some(APlicTrigger {
+                gsi: irq,
+                vm: self.vm.vm_fd(),
+            })
+        } else {
+            None
+        };
+        let net = Net::new(self.guest_memory.clone(), &mut env, &args, aplic_trigger)
+            .map_err(Error::Net)?;
+
         // We can also hold this somewhere if we need to keep the handle for later.
-        let net = Net::new(self.guest_memory.clone(), &mut env, &args).map_err(Error::Net)?;
-        self.net_devices.push(net);
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
         self.fdt_builder
             .add_virtio_device(range.start(), range.len(), irq);
+        self.net_devices.push(net);
         Ok(())
     }
 
@@ -741,12 +808,15 @@ impl Vmm {
         }
     }
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
     // TODO: move this where it makes sense from a config point of view as we add all
     // needed stuff in FDT.
     fn setup_fdt(&mut self) -> Result<()> {
         let mem_size: u64 = self.guest_memory.iter().map(|region| region.len()).sum();
+        #[cfg(target_arch = "aarch64")]
         let fdt_offset = mem_size - AARCH64_FDT_MAX_SIZE - 0x10000;
+        #[cfg(target_arch = "riscv64")]
+        let fdt_offset = mem_size - RISCV64_FDT_MAX_SIZE - 0x10000;
 
         let fdt = if !self.fdt_builder.has_prebuilt_fdt() {
             let cmdline = &self.kernel_cfg.cmdline;
@@ -761,6 +831,16 @@ impl Vmm {
                 .create_fdt()
                 .map_err(Error::SetupFdt)?;
 
+            #[cfg(target_arch = "riscv64")]
+            let fdt = self
+                .fdt_builder
+                .with_cmdline(String::from(
+                    cmdline.as_cstring().unwrap().to_str().unwrap(),
+                ))
+                .with_num_vcpus(self.num_vcpus.try_into().unwrap())
+                .with_mem_size(mem_size)
+                .create_fdt(self.vm.get_vcpus().first().unwrap().get_vcpu_fd())
+                .map_err(Error::SetupFdt)?;
             if let Some(dump_dtb_path) = &self.config.dump_dtb {
                 fdt.write_to_file(dump_dtb_path.path.to_str().unwrap())
                     .expect("Failed to dump dtb");
@@ -837,7 +917,7 @@ mod tests {
     fn default_vmm_config() -> VMMConfig {
         VMMConfig {
             kernel_config: KernelConfig {
-                #[cfg(target_arch = "x86_64")]
+                #[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))]
                 path: default_elf_path(),
                 #[cfg(target_arch = "aarch64")]
                 path: default_pe_path(),
@@ -882,7 +962,7 @@ mod tests {
             device_mgr.clone(),
         )
         .unwrap();
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
         let fdt_builder = FdtBuilder::new();
         let irq_allocator = IrqAllocator::new(SERIAL_IRQ, vm.max_irq()).unwrap();
         Vmm {
@@ -896,10 +976,12 @@ mod tests {
             exit_handler,
             block_devices: Vec::new(),
             net_devices: Vec::new(),
-            #[cfg(target_arch = "aarch64")]
+            #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
             num_vcpus: vmm_config.vcpu_config.num as u64,
-            #[cfg(target_arch = "aarch64")]
+            #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
             fdt_builder,
+            #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+            config: VMMConfig::default(),
         }
     }
 
@@ -985,7 +1067,6 @@ mod tests {
         );
         assert!(kernel_load_result.setup_header.is_some());
     }
-
     #[test]
     fn test_load_kernel_errors() {
         // Test case: kernel file does not exist.
@@ -1009,7 +1090,7 @@ mod tests {
             err,
             Error::KernelLoad(loader::Error::Elf(loader::elf::Error::ReadElfHeader))
         ));
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
         assert!(matches!(
             err,
             Error::KernelLoad(loader::Error::Pe(loader::pe::Error::ReadImageHeader))
@@ -1028,7 +1109,7 @@ mod tests {
             ))
         ));
 
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
         assert!(matches!(
             err,
             Error::KernelLoad(loader::Error::Pe(
@@ -1048,22 +1129,20 @@ mod tests {
             err,
             Error::KernelLoad(loader::Error::Elf(loader::elf::Error::ReadElfHeader))
         ));
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
         assert!(matches!(
             err,
             Error::KernelLoad(loader::Error::Pe(loader::pe::Error::ReadImageHeader))
         ));
     }
-
     #[test]
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
     fn test_load_kernel() {
         // Test case: Loading the default & valid image is ok.
         let vmm_config = default_vmm_config();
         let mut vmm = mock_vmm(vmm_config);
         assert!(vmm.load_kernel().is_ok());
     }
-
     #[test]
     fn test_cmdline_updates() {
         let mut vmm_config = default_vmm_config();
@@ -1089,7 +1168,7 @@ mod tests {
                 .unwrap()
         )
         .contains("console=ttyS0"));
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
         assert!(String::from(
             vmm.kernel_cfg
                 .cmdline
@@ -1100,7 +1179,6 @@ mod tests {
         )
         .contains("earlycon=uart,mmio"));
     }
-
     #[test]
     #[cfg(target_arch = "x86_64")]
     fn test_create_guest_memory() {
@@ -1178,7 +1256,6 @@ mod tests {
         vmm_config.vcpu_config = VcpuConfig { num: 254 };
         Vmm::try_from(vmm_config).unwrap();
     }
-
     #[test]
     // FIXME: We cannot run this on aarch64 because we do not have an image that just runs and
     // FIXME-continued: halts afterwards. Once we have this, we need to update `default_vmm_config`
@@ -1188,6 +1265,7 @@ mod tests {
         let mut vmm = mock_vmm(vmm_config);
 
         let tempfile = TempFile::new().unwrap();
+
         let block_config = BlockConfig {
             path: tempfile.as_path().to_path_buf(),
         };
@@ -1246,7 +1324,6 @@ mod tests {
                 .contains("virtio"));
         }
     }
-
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn test_setup_fdt() {
@@ -1285,6 +1362,8 @@ mod tests {
         };
         #[cfg(target_arch = "x86_64")]
         let start_addr = MMIO_GAP_START;
+        #[cfg(target_arch = "riscv64")]
+        let start_addr = RISCV64_MMIO_BASE;
         #[cfg(target_arch = "aarch64")]
         let start_addr = AARCH64_MMIO_BASE;
         let mut address_alloc = Vmm::create_address_allocator(&memory_config).unwrap();

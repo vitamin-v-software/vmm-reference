@@ -12,9 +12,11 @@ use vm_device::device_manager::MmioManager;
 use vm_device::{DeviceMmio, MutDeviceMmio};
 use vm_memory::{GuestAddressSpace, GuestMemoryMmap};
 
+use crate::intc::APlicTrigger;
 use crate::virtio::features::{VIRTIO_F_IN_ORDER, VIRTIO_F_RING_EVENT_IDX, VIRTIO_F_VERSION_1};
 use crate::virtio::net::features::*;
 use crate::virtio::net::{Error, NetArgs, Result, NET_DEVICE_ID, VIRTIO_NET_HDR_SIZE};
+use crate::virtio::IrqTrigger;
 use crate::virtio::{CommonConfig, Env, SingleFdSignalQueue, QUEUE_MAX_SIZE};
 
 use super::bindings;
@@ -29,6 +31,7 @@ where
     mem: Arc<GuestMemoryMmap>,
     cfg: CommonConfig<M>,
     tap_name: String,
+    aplic_trigger: Option<APlicTrigger>,
 }
 
 impl<M> Net<M>
@@ -39,6 +42,7 @@ where
         mem: Arc<GuestMemoryMmap>,
         env: &mut Env<M, B>,
         args: &NetArgs,
+        aplic_trigger: Option<APlicTrigger>,
     ) -> Result<Arc<Mutex<Self>>>
     where
         // We're using this (more convoluted) bound so we can pass both references and smart
@@ -75,6 +79,7 @@ where
             mem,
             cfg: common_cfg,
             tap_name: args.tap_name.clone(),
+            aplic_trigger,
         }));
 
         env.register_mmio_device(net.clone())
@@ -124,9 +129,14 @@ impl<M: GuestAddressSpace + Clone + Send + Sync + 'static> VirtioDeviceActions f
         // should define this somewhere.
         tap.set_vnet_hdr_size(VIRTIO_NET_HDR_SIZE as i32)
             .map_err(Error::Tap)?;
+        let irq_trigger = if cfg!(target_arch = "riscv64") {
+            IrqTrigger::APlicTrigger(Some(self.aplic_trigger.clone().unwrap()))
+        } else {
+            IrqTrigger::IrqFd(self.cfg.irqfd.clone())
+        };
 
         let driver_notify = SingleFdSignalQueue {
-            irqfd: self.cfg.irqfd.clone(),
+            irq_trigger,
             interrupt_status: self.cfg.virtio.interrupt_status.clone(),
         };
 

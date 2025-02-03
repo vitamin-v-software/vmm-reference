@@ -12,6 +12,7 @@ use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::intc::APlicTrigger;
 use event_manager::{
     Error as EvmgrError, EventManager, MutEventSubscriber, RemoteEndpoint, Result as EvmgrResult,
     SubscriberId,
@@ -24,6 +25,7 @@ use vm_device::bus::{self, MmioAddress, MmioRange};
 use vm_device::device_manager::MmioManager;
 use vm_device::DeviceMmio;
 use vm_memory::{GuestAddress, GuestAddressSpace};
+use vm_superio::Trigger;
 use vmm_sys_util::errno;
 use vmm_sys_util::eventfd::{EventFd, EFD_NONBLOCK};
 
@@ -66,6 +68,28 @@ pub enum Error {
     RegisterIrqfd(errno::Error),
 }
 
+// Enum that abstracts the way in which IRQs are triggered
+pub enum IrqTrigger {
+    IrqFd(Arc<EventFd>),
+    APlicTrigger(Option<APlicTrigger>),
+}
+
+impl IrqTrigger {
+    fn trigger(&self) {
+        match self {
+            IrqTrigger::IrqFd(irqfd) => {
+                irqfd
+                    .write(1)
+                    .expect("Failed write to eventfd when signaling queue");
+            }
+            IrqTrigger::APlicTrigger(aplic_trigger) => aplic_trigger
+                .clone()
+                .unwrap()
+                .trigger()
+                .expect("Failed write to aplic trigger when signaling queue"),
+        }
+    }
+}
 type Result<T> = std::result::Result<T, Error>;
 pub type Subscriber = Arc<Mutex<dyn MutEventSubscriber + Send>>;
 
@@ -168,6 +192,7 @@ impl<M: GuestAddressSpace + Clone + Send + 'static> CommonConfig<M> {
     pub fn new<B>(virtio_cfg: VirtioConfig<Queue>, env: &Env<M, B>) -> Result<Self> {
         let irqfd = Arc::new(EventFd::new(EFD_NONBLOCK).map_err(Error::EventFd)?);
 
+        #[cfg(not(target_arch = "riscv64"))]
         env.vm_fd
             .register_irqfd(&irqfd, env.mmio_cfg.gsi)
             .map_err(Error::RegisterIrqfd)?;
@@ -264,7 +289,7 @@ pub trait SignalUsedQueue {
 /// Uses a single irqfd as the basis of signalling any queue (useful for the MMIO transport,
 /// where a single interrupt is shared for everything).
 pub struct SingleFdSignalQueue {
-    pub irqfd: Arc<EventFd>,
+    pub irq_trigger: IrqTrigger,
     pub interrupt_status: Arc<AtomicU8>,
 }
 
@@ -272,9 +297,7 @@ impl SignalUsedQueue for SingleFdSignalQueue {
     fn signal_used_queue(&self, _index: u16) {
         self.interrupt_status
             .fetch_or(VIRTIO_MMIO_INT_VRING, Ordering::SeqCst);
-        self.irqfd
-            .write(1)
-            .expect("Failed write to eventfd when signalling queue");
+        self.irq_trigger.trigger();
     }
 }
 

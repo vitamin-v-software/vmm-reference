@@ -16,11 +16,13 @@ use vm_device::{DeviceMmio, MutDeviceMmio};
 use vm_memory::{GuestAddressSpace, GuestMemoryMmap};
 
 use crate::virtio::block::{BLOCK_DEVICE_ID, VIRTIO_BLK_F_RO};
-use crate::virtio::{CommonConfig, Env, SingleFdSignalQueue, QUEUE_MAX_SIZE};
+use crate::virtio::{CommonConfig, Env, IrqTrigger, SingleFdSignalQueue, QUEUE_MAX_SIZE};
 
 use super::inorder_handler::InOrderQueueHandler;
 use super::queue_handler::QueueHandler;
 use super::{build_config_space, BlockArgs, Error, Result};
+
+use crate::intc::APlicTrigger;
 
 // This Block device can only use the MMIO transport for now, but we plan to reuse large parts of
 // the functionality when we implement virtio PCI as well, for example by having a base generic
@@ -33,6 +35,7 @@ pub struct Block<M: GuestAddressSpace + Clone + Send + 'static> {
     // the outside.
     _root_device: bool,
     mem: Arc<GuestMemoryMmap>,
+    aplic_trigger: Option<APlicTrigger>,
 }
 
 impl<M: GuestAddressSpace + Clone + Send + Sync + 'static> Block<M> {
@@ -41,6 +44,7 @@ impl<M: GuestAddressSpace + Clone + Send + Sync + 'static> Block<M> {
         mem: Arc<GuestMemoryMmap>,
         env: &mut Env<M, B>,
         args: &BlockArgs,
+        aplic_trigger: Option<APlicTrigger>,
     ) -> Result<Self> {
         let device_features = args.device_features();
 
@@ -57,6 +61,7 @@ impl<M: GuestAddressSpace + Clone + Send + Sync + 'static> Block<M> {
             file_path: args.file_path.clone(),
             read_only: args.read_only,
             _root_device: args.root_device,
+            aplic_trigger,
         })
     }
 
@@ -66,6 +71,7 @@ impl<M: GuestAddressSpace + Clone + Send + Sync + 'static> Block<M> {
         mem: Arc<GuestMemoryMmap>,
         env: &mut Env<M, B>,
         args: &BlockArgs,
+        aplic_trigger: Option<APlicTrigger>,
     ) -> Result<Arc<Mutex<Self>>>
     where
         // We're using this (more convoluted) bound so we can pass both references and smart
@@ -73,7 +79,12 @@ impl<M: GuestAddressSpace + Clone + Send + Sync + 'static> Block<M> {
         B: DerefMut,
         B::Target: MmioManager<D = Arc<dyn DeviceMmio + Send + Sync>>,
     {
-        let block = Arc::new(Mutex::new(Self::create_block(mem, env, args)?));
+        let block = Arc::new(Mutex::new(Self::create_block(
+            mem,
+            env,
+            args,
+            aplic_trigger,
+        )?));
 
         // Register the device on the MMIO bus.
         env.register_mmio_device(block.clone())
@@ -123,9 +134,14 @@ impl<M: GuestAddressSpace + Clone + Send + 'static> VirtioDeviceActions for Bloc
 
         // TODO: Create the backend earlier (as part of `Block::new`)?
         let disk = StdIoBackend::new(file, features).map_err(Error::Backend)?;
+        let irq_trigger = if cfg!(target_arch = "riscv64") {
+            IrqTrigger::APlicTrigger(Some(self.aplic_trigger.clone().unwrap()))
+        } else {
+            IrqTrigger::IrqFd(self.cfg.irqfd.clone())
+        };
 
         let driver_notify = SingleFdSignalQueue {
-            irqfd: self.cfg.irqfd.clone(),
+            irq_trigger,
             interrupt_status: self.cfg.virtio.interrupt_status.clone(),
         };
 
@@ -185,7 +201,16 @@ mod tests {
             advertise_flush: true,
         };
 
-        let block_mutex = Block::new(env.mem.clone(), &mut env, &args).unwrap();
+        let aplic_trigger = if cfg!(target_arch = "riscv64") {
+            Some(APlicTrigger {
+                gsi: 5,
+                vm: env.vm_fd.clone(),
+            })
+        } else {
+            None
+        };
+
+        let block_mutex = Block::new(env.mem.clone(), &mut env, &args, aplic_trigger).unwrap();
         let block = block_mutex.lock().unwrap();
 
         assert_eq!(block.device_type(), BLOCK_DEVICE_ID);

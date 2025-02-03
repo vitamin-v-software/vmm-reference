@@ -6,6 +6,8 @@ use libc::siginfo_t;
 use std::cell::RefCell;
 use std::ffi::c_void;
 use std::io::{self, stdin};
+#[cfg(target_arch = "riscv64")]
+use std::mem::offset_of;
 use std::os::raw::c_int;
 use std::result;
 use std::sync::{Arc, Barrier, Condvar, Mutex};
@@ -20,10 +22,16 @@ use kvm_bindings::{
     kvm_mp_state, kvm_one_reg, kvm_vcpu_init, KVM_REG_ARM64, KVM_REG_ARM_CORE, KVM_REG_SIZE_U64,
     KVM_SYSTEM_EVENT_CRASH, KVM_SYSTEM_EVENT_RESET, KVM_SYSTEM_EVENT_SHUTDOWN,
 };
+#[cfg(target_arch = "riscv64")]
+use kvm_bindings::{
+    kvm_mp_state, KVM_REG_RISCV, KVM_REG_RISCV_CORE, KVM_REG_SIZE_U64, KVM_SYSTEM_EVENT_CRASH,
+    KVM_SYSTEM_EVENT_RESET, KVM_SYSTEM_EVENT_SHUTDOWN,
+};
+
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use vm_device::bus::{MmioAddress, PioAddress};
 use vm_device::device_manager::{IoManager, MmioManager, PioManager};
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use vm_memory::GuestMemoryRegion;
 #[cfg(target_arch = "x86_64")]
 use vm_memory::{Address, Bytes};
@@ -51,7 +59,11 @@ use regs::*;
 
 use crate::vm::VmRunState;
 #[cfg(target_arch = "aarch64")]
-use arch::{AARCH64_FDT_MAX_SIZE, AARCH64_PHYS_MEM_START};
+use arch::aarch64_consts::{AARCH64_FDT_MAX_SIZE, AARCH64_PHYS_MEM_START};
+#[cfg(target_arch = "riscv64")]
+use arch::riscv64_consts::*;
+#[cfg(target_arch = "riscv64")]
+use arch::{kvm_reg_id, kvm_reg_riscv_core_reg, riscv_core_reg};
 
 /// Initial stack for the boot CPU.
 #[cfg(target_arch = "x86_64")]
@@ -256,7 +268,7 @@ impl VcpuConfigList {
                 id: index,
                 msrs: supported_msrs.clone(),
             };
-            #[cfg(target_arch = "aarch64")]
+            #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
             let vcpu_config = VcpuConfig { id: index };
 
             configs.push(vcpu_config);
@@ -311,6 +323,13 @@ pub struct VcpuState {
     pub config: VcpuConfig,
 }
 
+#[cfg(target_arch = "riscv64")]
+#[derive(Clone)]
+pub struct VcpuState {
+    pub mp_state: kvm_mp_state,
+    pub config: VcpuConfig,
+}
+
 /// Represents the current run state of the VCPUs.
 #[derive(Default)]
 pub struct VcpuRunState {
@@ -356,8 +375,8 @@ impl KvmVcpu {
     ) -> Result<Self> {
         #[cfg(target_arch = "x86_64")]
         let vcpu;
-        #[cfg(target_arch = "aarch64")]
-        let mut vcpu;
+        #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+        let mut vcpu; //TODO check if there are missing configurations since we do just create_vcpu
 
         vcpu = KvmVcpu {
             vcpu_fd: vm_fd
@@ -383,6 +402,9 @@ impl KvmVcpu {
             vcpu.init(vm_fd)?;
             vcpu.configure_regs(memory)?;
         }
+
+        #[cfg(target_arch = "riscv64")]
+        vcpu.configure_regs(memory)?;
 
         Ok(vcpu)
     }
@@ -440,6 +462,15 @@ impl KvmVcpu {
         Ok(())
     }
 
+    #[cfg(target_arch = "riscv64")]
+    fn set_state(&mut self, state: VcpuState) -> Result<()> {
+        self.vcpu_fd
+            .set_mp_state(state.mp_state)
+            .map_err(Error::VcpuSetMpState)?;
+
+        Ok(())
+    }
+
     /// Create a vCPU from a previously saved state.
     pub fn from_state<M: GuestMemory>(
         vm_fd: &VmFd,
@@ -490,6 +521,28 @@ impl KvmVcpu {
                 .map_err(Error::VcpuSetReg)?;
         }
 
+        Ok(())
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    fn configure_regs<M: GuestMemory>(&mut self, guest_mem: &M) -> Result<()> {
+        let mut data: u64;
+        if self.config.id == 0 {
+            let mut fdt_offset: u64 = guest_mem.iter().map(|region| region.len()).sum();
+            fdt_offset = fdt_offset - RISCV64_FDT_MAX_SIZE - 0x10000;
+
+            data = RISCV64_PHYS_MEM_START + fdt_offset;
+            let dt_reg = riscv_core_reg!(a1);
+            self.vcpu_fd
+                .set_one_reg(dt_reg, &(data as u128).to_le_bytes())
+                .map_err(Error::VcpuSetReg)?;
+
+            data = 0;
+            let hartid_reg = riscv_core_reg!(a0);
+            self.vcpu_fd
+                .set_one_reg(hartid_reg, &(data as u128).to_le_bytes())
+                .map_err(Error::VcpuSetReg)?;
+        }
         Ok(())
     }
 
@@ -701,6 +754,15 @@ impl KvmVcpu {
                     .set_one_reg(reg_id, &(data as u128).to_le_bytes())
                     .map_err(Error::VcpuSetReg)?;
             }
+            #[cfg(target_arch = "riscv64")]
+            if self.config.id == 0 {
+                let data = ip.0;
+                let reg_id: u64 = riscv_core_reg!(pc);
+                /* Set program counter */
+                self.vcpu_fd
+                    .set_one_reg(reg_id, &(data as u128).to_le_bytes())
+                    .map_err(Error::VcpuSetReg)?;
+            }
         }
         self.init_tls()?;
 
@@ -775,7 +837,10 @@ impl KvmVcpu {
                                 .mmio_read(MmioAddress(addr), data)
                                 .is_err()
                             {
-                                debug!("Failed to read from mmio addr={} data={:#?}", addr, data);
+                                debug!(
+                                    "Failed to read from mmio addr={:#016x?} data={:#?}",
+                                    addr, data
+                                );
                             }
                         }
                         VcpuExit::MmioWrite(addr, data) => {
@@ -786,10 +851,13 @@ impl KvmVcpu {
                                 .mmio_write(MmioAddress(addr), data)
                                 .is_err()
                             {
-                                debug!("Failed to write to mmio");
+                                debug!(
+                                    "Failed to write to  mmio addr={:#016x?} data={:#?}",
+                                    addr, data
+                                );
                             }
                         }
-                        #[cfg(target_arch = "aarch64")]
+                        #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
                         VcpuExit::SystemEvent(type_, flags) => match type_ {
                             KVM_SYSTEM_EVENT_SHUTDOWN
                             | KVM_SYSTEM_EVENT_RESET
@@ -929,6 +997,19 @@ impl KvmVcpu {
             mpidr,
             config: self.config.clone(),
         })
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub fn save_state(&mut self) -> Result<VcpuState> {
+        let mp_state = self.vcpu_fd.get_mp_state().map_err(Error::VcpuGetMpState)?;
+        Ok(VcpuState {
+            mp_state,
+            config: self.config.clone(),
+        })
+    }
+
+    pub fn get_vcpu_fd(&self) -> &VcpuFd {
+        &self.vcpu_fd
     }
 }
 
