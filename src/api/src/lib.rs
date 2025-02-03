@@ -45,6 +45,12 @@ impl Cli {
                     .long("block")
                     .required(false)
                     .help("Block device configuration. \n\tFormat: \"path=<string>\"")
+            )
+            .arg(
+                Arg::new("dump-dtb")
+                .long("dump-dtb")
+                .required(false)
+                .help("If set, dump the DTB to a file")
             );
 
         // Save the usage beforehand as a string, because `get_matches` consumes the `App`.
@@ -64,6 +70,7 @@ impl Cli {
             .vcpu_config(matches.get_one::<String>("vcpu"))
             .net_config(matches.get_one::<String>("net"))
             .block_config(matches.get_one::<String>("block"))
+            .dump_dtb_config(matches.get_one::<String>("dump-dtb"))
             .build()
             .map_err(|e| format!("{:?}", e))
     }
@@ -231,6 +238,7 @@ mod tests {
                 vcpu_config: VcpuConfig { num: 1 },
                 block_config: None,
                 net_config: None,
+                dump_dtb: None,
             }
         );
 
@@ -247,6 +255,7 @@ mod tests {
                 vcpu_config: VcpuConfig { num: 1 },
                 block_config: None,
                 net_config: None,
+                dump_dtb: None,
             }
         );
     }

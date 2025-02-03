@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+use std::{fs::File, io::Write};
 pub use vm_fdt::{Error as FdtError, FdtWriter};
 use vm_memory::{guest_memory::Error as GuestMemoryError, Bytes, GuestAddress, GuestMemory};
 // This is an arbitrary number to specify the node for the GIC.
@@ -172,6 +173,17 @@ impl Fdt {
     pub fn write_to_mem<T: GuestMemory>(&self, guest_mem: &T, fdt_load_offset: u64) -> Result<()> {
         let fdt_address = GuestAddress(AARCH64_PHYS_MEM_START + fdt_load_offset);
         guest_mem.write_slice(self.fdt_blob.as_slice(), fdt_address)?;
+        Ok(())
+    }
+
+    pub fn write_to_file(&self, path: &str) -> std::io::Result<()> {
+        let mut file = File::options()
+            .read(false)
+            .create(true)
+            .write(true)
+            .append(false)
+            .open(path)?;
+        file.write_all(&self.fdt_blob)?;
         Ok(())
     }
 }

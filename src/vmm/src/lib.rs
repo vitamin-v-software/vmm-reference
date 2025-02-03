@@ -227,6 +227,7 @@ pub struct Vmm {
     num_vcpus: u64,
     #[cfg(target_arch = "aarch64")]
     fdt_builder: FdtBuilder,
+    config: VMMConfig,
 }
 
 // The `VmmExitHandler` is used as the mechanism for exiting from the event manager loop.
@@ -285,6 +286,7 @@ impl TryFrom<VMMConfig> for Vmm {
     type Error = Error;
 
     fn try_from(config: VMMConfig) -> Result<Self> {
+        let config_copy = config.clone();
         let kvm = Kvm::new().map_err(Error::KvmIoctl)?;
 
         // Check that the KVM on the host is supported.
@@ -332,6 +334,7 @@ impl TryFrom<VMMConfig> for Vmm {
             num_vcpus: config.vcpu_config.num as u64,
             #[cfg(target_arch = "aarch64")]
             fdt_builder,
+            config: config_copy,
         };
         vmm.add_serial_console()?;
         #[cfg(target_arch = "x86_64")]
@@ -747,6 +750,12 @@ impl Vmm {
             .with_mem_size(mem_size)
             .create_fdt()
             .map_err(Error::SetupFdt)?;
+
+        if let Some(dump_dtb_path) = &self.config.dump_dtb {
+            fdt.write_to_file(dump_dtb_path.path.to_str().unwrap())
+                .expect("Failed to dump dtb");
+        }
+
         fdt.write_to_mem(self.guest_memory.as_ref(), fdt_offset)
             .map_err(Error::SetupFdt)?;
         Ok(())
@@ -828,6 +837,7 @@ mod tests {
             vcpu_config: VcpuConfig { num: NUM_VCPUS },
             block_config: None,
             net_config: None,
+            dump_dtb: None,
         }
     }
 
