@@ -317,6 +317,13 @@ impl TryFrom<VMMConfig> for Vmm {
         #[cfg(target_arch = "aarch64")]
         let fdt_builder = FdtBuilder::new();
 
+        #[cfg(target_arch = "aarch64")]
+        if let Some(prebuilt_dtb) = &config.dtb {
+            fdt_builder
+                .with_prebuilt_fdt(prebuilt_dtb.path.clone())
+                .map_err(Error::SetupFdt)?;
+        }
+
         let irq_allocator = IrqAllocator::new(SERIAL_IRQ, vm.max_irq())?;
 
         let mut vmm = Vmm {
@@ -740,22 +747,28 @@ impl Vmm {
     fn setup_fdt(&mut self) -> Result<()> {
         let mem_size: u64 = self.guest_memory.iter().map(|region| region.len()).sum();
         let fdt_offset = mem_size - AARCH64_FDT_MAX_SIZE - 0x10000;
-        let cmdline = &self.kernel_cfg.cmdline;
-        let fdt = self
-            .fdt_builder
-            .with_cmdline(String::from(
-                cmdline.as_cstring().unwrap().to_str().unwrap(),
-            ))
-            .with_num_vcpus(self.num_vcpus.try_into().unwrap())
-            .with_mem_size(mem_size)
-            .create_fdt()
-            .map_err(Error::SetupFdt)?;
 
-        if let Some(dump_dtb_path) = &self.config.dump_dtb {
-            fdt.write_to_file(dump_dtb_path.path.to_str().unwrap())
-                .expect("Failed to dump dtb");
-        }
+        let fdt = if !self.fdt_builder.has_prebuilt_fdt() {
+            let cmdline = &self.kernel_cfg.cmdline;
+            #[cfg(target_arch = "aarch64")]
+            let fdt = self
+                .fdt_builder
+                .with_cmdline(String::from(
+                    cmdline.as_cstring().unwrap().to_str().unwrap(),
+                ))
+                .with_num_vcpus(self.num_vcpus.try_into().unwrap())
+                .with_mem_size(mem_size)
+                .create_fdt()
+                .map_err(Error::SetupFdt)?;
 
+            if let Some(dump_dtb_path) = &self.config.dump_dtb {
+                fdt.write_to_file(dump_dtb_path.path.to_str().unwrap())
+                    .expect("Failed to dump dtb");
+            }
+            fdt
+        } else {
+            self.fdt_builder.get_prebuilt_fdt().unwrap()
+        };
         fdt.write_to_mem(self.guest_memory.as_ref(), fdt_offset)
             .map_err(Error::SetupFdt)?;
         Ok(())
@@ -838,6 +851,7 @@ mod tests {
             block_config: None,
             net_config: None,
             dump_dtb: None,
+            dtb: None,
         }
     }
 

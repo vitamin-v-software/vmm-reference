@@ -5,8 +5,8 @@
 use std::convert::TryFrom;
 
 use super::{
-    BlockConfig, ConversionError, DumpDTBConfig, KernelConfig, MemoryConfig, NetConfig, VMMConfig,
-    VcpuConfig,
+    BlockConfig, ConversionError, DTBConfig, DumpDTBConfig, KernelConfig, MemoryConfig, NetConfig,
+    VMMConfig, VcpuConfig,
 };
 
 /// Builder structure for VMMConfig
@@ -174,6 +174,21 @@ impl Builder {
         match dump_dtb {
             Some(dd) => self.and_then(|mut config| {
                 config.dump_dtb = Some(TryFrom::try_from(dd).map_err(Into::into)?);
+                Ok(config)
+            }),
+            None => self,
+        }
+    }
+
+    /// Configure Builder with DTB Configuration for the VMM.
+    pub fn dtb_config<T>(self, dtb: Option<T>) -> Self
+    where
+        DTBConfig: TryFrom<T>,
+        <DTBConfig as TryFrom<T>>::Error: Into<ConversionError>,
+    {
+        match dtb {
+            Some(d) => self.and_then(|mut config| {
+                config.dtb = Some(TryFrom::try_from(d).map_err(Into::into)?);
                 Ok(config)
             }),
             None => self,
@@ -352,6 +367,7 @@ mod tests {
                     path: PathBuf::from("/dev/loop0")
                 }),
                 dump_dtb: None,
+                dtb: None,
             }
         );
     }

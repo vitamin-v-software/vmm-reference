@@ -284,6 +284,32 @@ impl TryFrom<&String> for DumpDTBConfig {
     }
 }
 
+/// DTB configuration
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DTBConfig {
+    /// Path to the FDT.
+    pub path: PathBuf,
+}
+
+impl TryFrom<&String> for DTBConfig {
+    type Error = ConversionError;
+
+    fn try_from(dtb_cfg_str: &String) -> Result<Self, Self::Error> {
+        // Supported options: `path=PathBuf`
+        let mut arg_parser = CfgArgParser::new(dtb_cfg_str);
+
+        let path = arg_parser
+            .value_of("path")
+            .map_err(ConversionError::new_block)?
+            .ok_or_else(|| ConversionError::new_block("Missing required argument: path"))?;
+
+        arg_parser
+            .all_consumed()
+            .map_err(ConversionError::new_block)?;
+        Ok(DTBConfig { path })
+    }
+}
+
 /// VMM configuration.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct VMMConfig {
@@ -299,6 +325,8 @@ pub struct VMMConfig {
     pub block_config: Option<BlockConfig>,
     /// Dump DTB configuration
     pub dump_dtb: Option<DumpDTBConfig>,
+    /// DTB configuration
+    pub dtb: Option<DTBConfig>,
 }
 
 #[cfg(test)]

@@ -30,6 +30,7 @@ fn run_vmm(kernel_path: PathBuf) {
         block_config: None,
         net_config: None,
         dump_dtb: None,
+        dtb: None,
     };
 
     let mut vmm = Vmm::try_from(vmm_config).unwrap();

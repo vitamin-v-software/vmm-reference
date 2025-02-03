@@ -51,6 +51,12 @@ impl Cli {
                 .long("dump-dtb")
                 .required(false)
                 .help("If set, dump the DTB to a file")
+            )
+            .arg(
+                Arg::new("dtb")
+                .long("dtb")
+                .required(false)
+                .help("If set, takes as DTB the one at the specified path")
             );
 
         // Save the usage beforehand as a string, because `get_matches` consumes the `App`.
@@ -71,6 +77,7 @@ impl Cli {
             .net_config(matches.get_one::<String>("net"))
             .block_config(matches.get_one::<String>("block"))
             .dump_dtb_config(matches.get_one::<String>("dump-dtb"))
+            .dtb_config(matches.get_one::<String>("dtb"))
             .build()
             .map_err(|e| format!("{:?}", e))
     }
@@ -239,6 +246,7 @@ mod tests {
                 block_config: None,
                 net_config: None,
                 dump_dtb: None,
+                dtb: None,
             }
         );
 
@@ -256,6 +264,7 @@ mod tests {
                 block_config: None,
                 net_config: None,
                 dump_dtb: None,
+                dtb: None,
             }
         );
     }

@@ -2,7 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-use std::{fs::File, io::Write};
+use log::{debug, trace};
+use std::path::PathBuf;
+use std::{
+    fs::File,
+    io::{self, Read, Write},
+};
 pub use vm_fdt::{Error as FdtError, FdtWriter};
 use vm_memory::{guest_memory::Error as GuestMemoryError, Bytes, GuestAddress, GuestMemory};
 // This is an arbitrary number to specify the node for the GIC.
@@ -47,6 +52,7 @@ pub enum Error {
     Fdt(FdtError),
     Memory(GuestMemoryError),
     MissingRequiredConfig(String),
+    FdtCustomDtb(io::Error),
 }
 
 impl From<FdtError> for Error {
@@ -58,6 +64,12 @@ impl From<FdtError> for Error {
 impl From<GuestMemoryError> for Error {
     fn from(inner: GuestMemoryError) -> Self {
         Error::Memory(inner)
+    }
+}
+
+impl From<io::Error> for Error {
+    fn from(inner: io::Error) -> Self {
+        Error::FdtCustomDtb(inner)
     }
 }
 
@@ -78,11 +90,35 @@ pub struct FdtBuilder {
     serial_console: Option<(u64, u64)>,
     rtc: Option<(u64, u64)>,
     virtio_devices: Vec<DeviceInfo>,
+    prebuilt: Option<Fdt>,
 }
 
 impl FdtBuilder {
     pub fn new() -> Self {
         FdtBuilder::default()
+    }
+
+    pub fn with_prebuilt_fdt(&mut self, prebuilt_fdt_path: PathBuf) -> Result<&mut Self> {
+        let mut fdt_file = File::options()
+            .read(true)
+            .create(false)
+            .write(false)
+            .append(false)
+            .open(prebuilt_fdt_path)
+            .map_err(|e| Error::FdtCustomDtb(e))?;
+
+        let mut prebuilt_fdt = Fdt::default();
+        fdt_file.read_to_end(&mut prebuilt_fdt.fdt_blob).map_err(|e| Error::FdtCustomDtb(e))?;
+        self.prebuilt = Some(prebuilt_fdt);
+        Ok(self)
+    }
+
+    pub fn has_prebuilt_fdt(&self) -> bool {
+        self.prebuilt.is_some()
+    }
+
+    pub fn get_prebuilt_fdt(&self) -> Option<Fdt> {
+        self.prebuilt.clone()
     }
 
     pub fn with_cmdline(&mut self, cmdline: String) -> &mut Self {
@@ -119,7 +155,14 @@ impl FdtBuilder {
         self.virtio_devices.len()
     }
 
-    pub fn create_fdt(&self) -> Result<Fdt> {
+    pub fn create_fdt(&mut self) -> Result<Fdt> {
+        if let Some(fdt) = &mut self.prebuilt {
+            let ret: Fdt = fdt.clone();
+            fdt.fdt_blob.clear();
+            debug!("FdtBuilder: Returning prebuilt FDT");
+            return Ok(ret);
+        }
+
         let mut fdt = FdtWriter::new()?;
 
         // The whole thing is put into one giant node with s
@@ -165,6 +208,7 @@ impl FdtBuilder {
     }
 }
 
+#[derive(Default, Clone)]
 pub struct Fdt {
     fdt_blob: Vec<u8>,
 }
