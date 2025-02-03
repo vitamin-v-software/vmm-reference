@@ -458,13 +458,28 @@ impl Vmm {
 
         // Add the kernel command line to the boot parameters.
         bootparams.hdr.cmd_line_ptr = CMDLINE_START as u32;
-        bootparams.hdr.cmdline_size =
-            String::try_from(&self.kernel_cfg.cmdline).unwrap().len() as u32 + 1;
+        bootparams.hdr.cmdline_size = String::from(
+            self.kernel_cfg
+                .cmdline
+                .as_cstring()
+                .unwrap()
+                .to_str()
+                .unwrap(),
+        )
+        .len() as u32
+            + 1;
 
         // Load the kernel command line into guest memory.
         let mut cmdline = Cmdline::new(4096).unwrap();
         cmdline
-            .insert_str(String::try_from(&self.kernel_cfg.cmdline).unwrap())
+            .insert_str(String::from(
+                self.kernel_cfg
+                    .cmdline
+                    .as_cstring()
+                    .unwrap()
+                    .to_str()
+                    .unwrap(),
+            ))
             .map_err(Error::Cmdline)?;
 
         load_cmdline(
@@ -517,7 +532,7 @@ impl Vmm {
         #[cfg(target_arch = "aarch64")]
         self.kernel_cfg
             .cmdline
-            .insert_str(&format!("earlycon=uart,mmio,0x{:08x}", AARCH64_MMIO_BASE))
+            .insert_str(format!("earlycon=uart,mmio,0x{:08x}", AARCH64_MMIO_BASE))
             .map_err(Error::Cmdline)?;
 
         // Put it on the bus.
@@ -703,7 +718,7 @@ impl Vmm {
     }
 
     fn check_kvm_capabilities(kvm: &Kvm) -> Result<()> {
-        let capabilities = vec![Irqchip, Ioeventfd, Irqfd, UserMemory];
+        let capabilities = [Irqchip, Ioeventfd, Irqfd, UserMemory];
 
         // Check that all desired capabilities are supported.
         if let Some(c) = capabilities
@@ -725,7 +740,9 @@ impl Vmm {
         let cmdline = &self.kernel_cfg.cmdline;
         let fdt = self
             .fdt_builder
-            .with_cmdline(String::try_from(&cmdline).unwrap())
+            .with_cmdline(String::from(
+                cmdline.as_cstring().unwrap().to_str().unwrap(),
+            ))
             .with_num_vcpus(self.num_vcpus.try_into().unwrap())
             .with_mem_size(mem_size)
             .create_fdt()
@@ -1029,18 +1046,35 @@ mod tests {
         vmm_config.kernel_config.path = default_elf_path();
         let mut vmm = mock_vmm(vmm_config);
         assert_eq!(
-            String::try_from(&vmm.kernel_cfg.cmdline).unwrap(),
+            vmm.kernel_cfg
+                .cmdline
+                .as_cstring()
+                .unwrap()
+                .to_str()
+                .unwrap(),
             DEFAULT_KERNEL_CMDLINE
         );
         vmm.add_serial_console().unwrap();
         #[cfg(target_arch = "x86_64")]
-        assert!(String::try_from(&vmm.kernel_cfg.cmdline)
-            .unwrap()
-            .contains("console=ttyS0"));
+        assert!(String::from(
+            vmm.kernel_cfg
+                .cmdline
+                .as_cstring()
+                .unwrap()
+                .to_str()
+                .unwrap()
+        )
+        .contains("console=ttyS0"));
         #[cfg(target_arch = "aarch64")]
-        assert!(String::try_from(&vmm.kernel_cfg.cmdline)
-            .unwrap()
-            .contains("earlycon=uart,mmio"));
+        assert!(String::from(
+            vmm.kernel_cfg
+                .cmdline
+                .as_cstring()
+                .unwrap()
+                .to_str()
+                .unwrap(),
+        )
+        .contains("earlycon=uart,mmio"));
     }
 
     #[test]
@@ -1138,8 +1172,13 @@ mod tests {
         assert_eq!(vmm.block_devices.len(), 1);
         #[cfg(target_arch = "aarch64")]
         assert_eq!(vmm.fdt_builder.virtio_device_len(), 1);
-        assert!(String::try_from(&vmm.kernel_cfg.cmdline)
-            .unwrap()
+        assert!(vmm
+            .kernel_cfg
+            .cmdline
+            .as_cstring()
+            .expect("Could not open cmdline")
+            .to_str()
+            .expect("CString is not valid UTF-8")
             .contains("virtio"));
 
         let invalid_block_config = BlockConfig {
@@ -1173,8 +1212,13 @@ mod tests {
             assert_eq!(vmm.net_devices.len(), 1);
             #[cfg(target_arch = "aarch64")]
             assert_eq!(vmm.fdt_builder.virtio_device_len(), 1);
-            assert!(String::try_from(&vmm.kernel_cfg.cmdline)
-                .unwrap()
+            assert!(vmm
+                .kernel_cfg
+                .cmdline
+                .as_cstring()
+                .expect("Could not open cmdline")
+                .to_str()
+                .expect("CString is not valid UTF-8")
                 .contains("virtio"));
         }
     }
@@ -1196,7 +1240,9 @@ mod tests {
             let cmdline = &vmm.kernel_cfg.cmdline;
             let fdt = vmm
                 .fdt_builder
-                .with_cmdline(String::try_from(&cmdline).unwrap())
+                .with_cmdline(String::from(
+                    cmdline.as_cstring().unwrap().to_str().unwrap(),
+                ))
                 .with_num_vcpus(vmm.num_vcpus.try_into().unwrap())
                 .with_mem_size(mem_size)
                 .with_serial_console(0x40000000, 0x1000)

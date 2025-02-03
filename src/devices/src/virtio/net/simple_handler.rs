@@ -7,6 +7,7 @@ use std::io::{self, Read, Write};
 use std::result;
 
 use log::warn;
+use thiserror::Error;
 use virtio_queue::{DescriptorChain, Queue, QueueOwnedT, QueueT};
 use vm_memory::{Bytes, GuestMemoryMmap};
 
@@ -24,16 +25,19 @@ use std::sync::Arc;
 // We assume the TX frame will not exceed this size either.
 const MAX_BUFFER_SIZE: usize = 65562;
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum Error {
+    #[error("Guest memory error: {0}")]
     GuestMemory(vm_memory::GuestMemoryError),
-    Queue(virtio_queue::Error),
+    #[error("Queue error")]
+    Queue,
+    #[error("Tap device error: {0}")]
     Tap(io::Error),
 }
 
 impl From<virtio_queue::Error> for Error {
-    fn from(e: virtio_queue::Error) -> Self {
-        Error::Queue(e)
+    fn from(_e: virtio_queue::Error) -> Self {
+        Error::Queue
     }
 }
 

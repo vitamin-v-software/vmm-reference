@@ -268,7 +268,6 @@ impl VcpuConfigList {
 
 /// Structure holding the kvm state for an x86_64 VCPU.
 #[cfg(target_arch = "x86_64")]
-#[derive(Clone)]
 pub struct VcpuState {
     pub cpuid: CpuId,
     pub msrs: Msrs,
@@ -283,6 +282,24 @@ pub struct VcpuState {
     pub config: VcpuConfig,
 }
 
+#[cfg(target_arch = "x86_64")]
+impl Clone for VcpuState {
+    fn clone(&self) -> Self {
+        VcpuState {
+            cpuid: self.cpuid.clone(),
+            msrs: self.msrs.clone(),
+            debug_regs: self.debug_regs,
+            lapic: self.lapic,
+            mp_state: self.mp_state,
+            regs: self.regs,
+            sregs: self.sregs,
+            vcpu_events: self.vcpu_events,
+            xcrs: self.xcrs,
+            xsave: Default::default(),
+            config: self.config.clone(),
+        }
+    }
+}
 #[cfg(target_arch = "aarch64")]
 #[derive(Clone)]
 pub struct VcpuState {
@@ -323,7 +340,7 @@ pub struct KvmVcpu {
 }
 
 impl KvmVcpu {
-    thread_local!(static TLS_VCPU_PTR: RefCell<Option<*const KvmVcpu>> = RefCell::new(None));
+    thread_local!(static TLS_VCPU_PTR: RefCell<Option<*mut KvmVcpu>> = const { RefCell::new(None) });
 
     /// Create a new vCPU.
     // This is needed so we can initialize the vcpu the same way on x86_64 and aarch64, but
@@ -412,7 +429,7 @@ impl KvmVcpu {
     fn set_state(&mut self, state: VcpuState) -> Result<()> {
         for reg in state.regs {
             self.vcpu_fd
-                .set_one_reg(reg.id, reg.addr as u128)
+                .set_one_reg(reg.id, &u128::to_le_bytes(reg.addr.into()))
                 .map_err(Error::VcpuSetReg)?;
         }
 
@@ -440,7 +457,6 @@ impl KvmVcpu {
             run_barrier,
             run_state,
         };
-
         #[cfg(target_arch = "aarch64")]
         vcpu.init(vm_fd)?;
 
@@ -458,7 +474,7 @@ impl KvmVcpu {
         data = (PSR_D_BIT | PSR_A_BIT | PSR_I_BIT | PSR_F_BIT | PSR_MODE_EL1h).into();
         reg_id = arm64_core_reg!(pstate);
         self.vcpu_fd
-            .set_one_reg(reg_id, data as u128)
+            .set_one_reg(reg_id, &(data as u128).to_le_bytes())
             .map_err(Error::VcpuSetReg)?;
 
         // Other cpus are powered off initially
@@ -466,11 +482,11 @@ impl KvmVcpu {
             /* X0 -- fdt address */
             let mut fdt_offset: u64 = guest_mem.iter().map(|region| region.len()).sum();
             fdt_offset = fdt_offset - AARCH64_FDT_MAX_SIZE - 0x10000;
-            data = (AARCH64_PHYS_MEM_START + fdt_offset) as u64;
+            data = AARCH64_PHYS_MEM_START + fdt_offset;
             // hack -- can't get this to do offsetof(regs[0]) but luckily it's at offset 0
             reg_id = arm64_core_reg!(regs);
             self.vcpu_fd
-                .set_one_reg(reg_id, data as u128)
+                .set_one_reg(reg_id, &(data as u128).to_le_bytes())
                 .map_err(Error::VcpuSetReg)?;
         }
 
@@ -554,11 +570,11 @@ impl KvmVcpu {
 
         // Write segments to guest memory.
         gdt_table.write_to_mem(guest_memory).map_err(Error::Gdt)?;
-        sregs.gdt.base = BOOT_GDT_OFFSET as u64;
+        sregs.gdt.base = BOOT_GDT_OFFSET;
         sregs.gdt.limit = std::mem::size_of_val(&gdt_table) as u16 - 1;
 
         write_idt_value(0, guest_memory).map_err(Error::Gdt)?;
-        sregs.idt.base = BOOT_IDT_OFFSET as u64;
+        sregs.idt.base = BOOT_IDT_OFFSET;
         sregs.idt.limit = std::mem::size_of::<u64>() as u16 - 1;
 
         sregs.cs = code_seg;
@@ -642,7 +658,7 @@ impl KvmVcpu {
     fn init_tls(&mut self) -> Result<()> {
         Self::TLS_VCPU_PTR.with(|vcpu| {
             if vcpu.borrow().is_none() {
-                *vcpu.borrow_mut() = Some(self as *const KvmVcpu);
+                *vcpu.borrow_mut() = Some(self as *mut KvmVcpu);
                 Ok(())
             } else {
                 Err(Error::TlsInitialized)
@@ -653,13 +669,13 @@ impl KvmVcpu {
 
     fn set_local_immediate_exit(value: u8) {
         Self::TLS_VCPU_PTR.with(|v| {
-            if let Some(vcpu) = *v.borrow() {
-                // The block below modifies a mmaped memory region (`kvm_run` struct) which is valid
+            if let Some(vcpu) = *v.borrow_mut() {
+                // SAFETY: The block below modifies a mmaped memory region (`kvm_run` struct) which is valid
                 // as long as the `VMM` is still in scope. This function is called in response to
                 // SIGRTMIN(), while the vCPU threads are still active. Their termination are
                 // strictly bound to the lifespan of the `VMM` and it precedes the `VMM` dropping.
                 unsafe {
-                    let vcpu_ref = &*vcpu;
+                    let vcpu_ref = &mut *vcpu;
                     vcpu_ref.vcpu_fd.set_kvm_immediate_exit(value);
                 };
             }
@@ -670,8 +686,8 @@ impl KvmVcpu {
     ///
     /// # Arguments
     ///
-    /// * `instruction_pointer`: Represents the start address of the vcpu. This can be None
-    /// when the IP is specified using the platform dependent registers.
+    /// * `instruction_pointer`: Represents the start address of the vcpu.
+    ///   This can be None when the IP is specified using the platform dependent registers.
     #[allow(clippy::if_same_then_else)]
     pub fn run(&mut self, instruction_pointer: Option<GuestAddress>) -> Result<()> {
         if let Some(ip) = instruction_pointer {
@@ -682,7 +698,7 @@ impl KvmVcpu {
                 let data = ip.0;
                 let reg_id = arm64_core_reg!(pc);
                 self.vcpu_fd
-                    .set_one_reg(reg_id, data as u128)
+                    .set_one_reg(reg_id, &(data as u128).to_le_bytes())
                     .map_err(Error::VcpuSetReg)?;
             }
         }
@@ -783,6 +799,14 @@ impl KvmVcpu {
                                     eprintln!("Failed to set canon mode. Stdin will not echo.");
                                 }
                                 self.run_state.set_and_notify(VmRunState::Exiting);
+                                if type_ == KVM_SYSTEM_EVENT_SHUTDOWN {
+                                    println!("KVM session ended correctly");
+                                } else {
+                                    println!(
+                                        "Exit reason: {:#?}",
+                                        VcpuExit::SystemEvent(type_, flags)
+                                    );
+                                }
                                 break;
                             }
                             _ => {

@@ -8,6 +8,7 @@ license = "Apache-2.0 OR BSD-3-Clause"
 [dependencies]
 vmm = { path = "src/vmm" }
 api = { path = "src/api" }
+linux-loader = "0.13.0"
 
 [workspace]
 members = ["src/vm-vcpu-ref"]
@@ -23,4 +24,3 @@ panic = "abort"
 [patch.crates-io]
 # TODO: Update with https://github.com/rust-vmm/linux-loader.git hash of commit
 # "add as_string() to the Cmdline crate"
-linux-loader = { git = "https://github.com/vitamin-v-software/linux-loader.git", rev = "76aefef" }

@@ -13,11 +13,15 @@ use vm_memory::{self, GuestAddressSpace, GuestMemoryMmap};
 use std::sync::Arc;
 
 use crate::virtio::SignalUsedQueue;
+use thiserror::Error;
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum Error {
+    #[error("Guest memory error: {0}")]
     GuestMemory(vm_memory::GuestMemoryError),
+    #[error("Queue error: {0}")]
     Queue(virtio_queue::Error),
+    #[error("Process request error")]
     ProcessRequest(stdio_executor::ProcessReqError),
 }
 

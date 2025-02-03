@@ -5,7 +5,7 @@
 #![deny(missing_docs)]
 use std::result;
 
-use clap::{App, Arg};
+use clap::{Arg, Command};
 use vmm::VMMConfig;
 
 /// Command line parser.
@@ -18,37 +18,32 @@ impl Cli {
     ///
     /// * `cmdline_args` - command line arguments passed to the application.
     pub fn launch(cmdline_args: Vec<&str>) -> result::Result<VMMConfig, String> {
-        let mut app = App::new(cmdline_args[0].to_string())
+        let mut app = Command::new("vmm-reference")
             .arg(
-                Arg::with_name("memory")
+                Arg::new("memory")
                     .long("memory")
-                    .takes_value(true)
                     .help("Guest memory configuration.\n\tFormat: \"size_mib=<u32>\""),
             )
             .arg(
-                Arg::with_name("vcpu")
+                Arg::new("vcpu")
                     .long("vcpu")
-                    .takes_value(true)
                     .help("vCPU configuration.\n\tFormat: \"num=<u8>\""),
             )
             .arg(
-                Arg::with_name("kernel")
+                Arg::new("kernel")
                     .long("kernel")
                     .required(true)
-                    .takes_value(true)
                     .help("Kernel configuration.\n\tFormat: \"path=<string>[,cmdline=<string>,kernel_load_addr=<u64>]\""),
             )
             .arg(
-                Arg::with_name("net")
+                Arg::new("net")
                     .long("net")
-                    .takes_value(true)
                     .help("Network device configuration. \n\tFormat: \"tap=<string>\"")
             )
             .arg(
-                Arg::with_name("block")
+                Arg::new("block")
                     .long("block")
                     .required(false)
-                    .takes_value(true)
                     .help("Block device configuration. \n\tFormat: \"path=<string>\"")
             );
 
@@ -58,17 +53,17 @@ impl Cli {
         let _ = app.write_long_help(&mut help_msg_buf);
         let help_msg = String::from_utf8_lossy(&help_msg_buf);
 
-        let matches = app.get_matches_from_safe(cmdline_args).map_err(|e| {
+        let matches = app.try_get_matches_from(cmdline_args).map_err(|e| {
             eprintln!("{}", help_msg);
             format!("Invalid command line arguments: {}", e)
         })?;
 
         VMMConfig::builder()
-            .memory_config(matches.value_of("memory"))
-            .kernel_config(matches.value_of("kernel"))
-            .vcpu_config(matches.value_of("vcpu"))
-            .net_config(matches.value_of("net"))
-            .block_config(matches.value_of("block"))
+            .memory_config(matches.get_one::<String>("memory"))
+            .kernel_config(matches.get_one::<String>("kernel"))
+            .vcpu_config(matches.get_one::<String>("vcpu"))
+            .net_config(matches.get_one::<String>("net"))
+            .block_config(matches.get_one::<String>("block"))
             .build()
             .map_err(|e| format!("{:?}", e))
     }

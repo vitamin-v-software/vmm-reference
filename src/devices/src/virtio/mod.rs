@@ -118,7 +118,7 @@ pub struct Env<'a, M, B> {
     pub kernel_cmdline: &'a mut Cmdline,
 }
 
-impl<'a, M, B> Env<'a, M, B>
+impl<M, B> Env<'_, M, B>
 where
     // We're using this (more convoluted) bound so we can pass both references and smart
     // pointers such as mutex guards here.
@@ -350,7 +350,7 @@ pub(crate) mod tests {
         // the IRQ fds and thus test the virtio functionality in arm as well.
         fn create_gic(vm_fd: &VmFd) {
             let mut create_device_attr = kvm_create_device {
-                type_: kvm_device_type_KVM_DEV_TYPE_ARM_VGIC_V3 as u32,
+                type_: kvm_device_type_KVM_DEV_TYPE_ARM_VGIC_V3,
                 fd: 0,
                 flags: 0,
             };
@@ -387,7 +387,11 @@ pub(crate) mod tests {
         assert_eq!(bus_range.size(), range.size());
 
         assert_eq!(
-            mock.kernel_cmdline.as_string().unwrap(),
+            mock.kernel_cmdline
+                .as_cstring()
+                .unwrap()
+                .into_string()
+                .unwrap(),
             format!(
                 "virtio_mmio.device=4K@0x{:x}:{}",
                 range.base().0,
@@ -398,7 +402,9 @@ pub(crate) mod tests {
         mock.env().insert_cmdline_str("ending_string").unwrap();
         assert!(mock
             .kernel_cmdline
-            .as_string()
+            .as_cstring()
+            .unwrap()
+            .into_string()
             .unwrap()
             .ends_with("ending_string"));
     }
